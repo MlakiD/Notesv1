@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 
+import { Redirect } from 'expo-router';
 import {
   Button,
   ScrollView,
@@ -9,6 +10,7 @@ import {
   View,
 } from 'react-native';
 
+import { useAuth } from '../../lib/auth';
 import { supabase } from '../../lib/supabase';
 
 type Note = {
@@ -16,67 +18,33 @@ type Note = {
   content: string;
 };
 
-// Dijelimo jedno povezivanje između pokretanja komponente.
-let connection: Promise<string> | undefined;
-
-function connect() {
-  if (!connection) {
-    connection = (async () => {
-      const { data, error } = await supabase.auth.getSession();
-
-      if (error) throw error;
-
-      // Ponovno koristi sesiju spremljenu pri prethodnom posjetu.
-      if (data.session) {
-        return data.session.user.id;
-      }
-
-      // Prvi posjet: izradi identitet bez zaslona za prijavu.
-      const result = await supabase.auth.signInAnonymously();
-
-      if (result.error) throw result.error;
-
-      if (!result.data.user) {
-        throw new Error('Povezivanje nije uspjelo.');
-      }
-
-      return result.data.user.id;
-    })().catch((error) => {
-      connection = undefined;
-      throw error;
-    });
-  }
-
-  return connection;
-}
-
 export default function Index() {
+  const { session, loading: authLoading } = useAuth();
+  const userId = session?.user.id ?? '';
+
   const [notes, setNotes] = useState<Note[]>([]);
   const [content, setContent] = useState('');
-  const [userId, setUserId] = useState('');
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState('');
 
-  // Pri otvaranju aplikacije poveži se i učitaj bilješke.
+  // Učitaj bilješke prijavljenog korisnika.
   useEffect(() => {
+    if (!userId) return;
+
     let active = true;
+    setLoading(true);
 
     async function loadNotes() {
       try {
-        const id = await connect();
-
         const { data, error } = await supabase
           .from('notes')
           .select('id, content')
-          .eq('user_id', id);
+          .eq('user_id', userId);
 
         if (error) throw error;
 
-        if (active) {
-          setUserId(id);
-          setNotes(data ?? []);
-        }
+        if (active) setNotes(data ?? []);
       } catch (error) {
         if (active) {
           setMessage(
@@ -95,7 +63,10 @@ export default function Index() {
     return () => {
       active = false;
     };
-  }, []);
+  }, [userId]);
+
+  if (authLoading) return null;
+  if (!session) return <Redirect href="/login" />;
 
   async function saveNote() {
     const text = content.trim();
@@ -130,9 +101,19 @@ export default function Index() {
     }
   }
 
+  async function logout() {
+    await supabase.auth.signOut();
+    setNotes([]);
+  }
+
   return (
     <ScrollView contentContainerStyle={styles.container}>
-      <Text style={styles.heading}>Moje bilješke</Text>
+      <View style={styles.topRow}>
+        <Text style={styles.heading}>Moje bilješke</Text>
+        <Button title="Odjava" onPress={logout} />
+      </View>
+
+      <Text style={styles.email}>Prijavljen: {session.user.email}</Text>
 
       {loading ? (
         <Text>Učitavanje bilješki...</Text>
@@ -145,38 +126,30 @@ export default function Index() {
             value={content}
             onChangeText={setContent}
             multiline
-            editable={!!userId && !saving}
+            editable={!saving}
           />
 
           <Button
             title={saving ? 'Spremanje...' : 'Spremi bilješku'}
             onPress={saveNote}
-            disabled={!userId || !content.trim() || saving}
+            disabled={!content.trim() || saving}
           />
 
-          <Text style={styles.subheading}>
-            Spremljene bilješke
-          </Text>
+          <Text style={styles.subheading}>Spremljene bilješke</Text>
 
-          {userId && notes.length === 0 && (
-            <Text>
-              Nema bilješki. Napiši prvu bilješku iznad.
-            </Text>
+          {notes.length === 0 && (
+            <Text>Nema bilješki. Napiši prvu bilješku iznad.</Text>
           )}
 
           {notes.map((note) => (
             <View key={note.id} style={styles.note}>
-              <Text style={styles.noteText}>
-                {note.content}
-              </Text>
+              <Text style={styles.noteText}>{note.content}</Text>
             </View>
           ))}
         </>
       )}
 
-      {!!message && (
-        <Text style={styles.error}>{message}</Text>
-      )}
+      {!!message && <Text style={styles.error}>{message}</Text>}
     </ScrollView>
   );
 }
@@ -191,9 +164,19 @@ const styles = StyleSheet.create({
     alignSelf: 'center',
   },
 
+  topRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+
   heading: {
     fontSize: 28,
     fontWeight: 'bold',
+  },
+
+  email: {
+    color: '#555',
   },
 
   subheading: {
